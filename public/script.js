@@ -76,6 +76,19 @@ async function fetchUsers() {
   }
 }
 
+async function fetchTotalUsers() {
+  try {
+    const res = await fetch(`${API_URL}/health`);
+    const data = await res.json();
+
+    document.getElementById("total-users").textContent =
+      `Total Cached Users: ${data.total}`;
+  } catch (e) {
+    document.getElementById("total-users").textContent =
+      "Total Cached Users: unavailable";
+  }
+}
+
 // WebSocket auto-connect
 const ws = new WebSocket(`ws://${API_URL.split("://")[1]}`);
 
