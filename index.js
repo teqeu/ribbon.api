@@ -5,7 +5,7 @@ import { Client, GatewayIntentBits } from "discord.js";
 const app = express();
 const PORT = 3000;
 
-// Discord bot client
+// Discord client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -14,23 +14,44 @@ const client = new Client({
     ]
 });
 
-// In-memory cache for user presence
+// In-memory cache for presence
 const presenceCache = new Map();
 
 // Listen for presence updates
 client.on("presenceUpdate", (oldPresence, newPresence) => {
-    const userId = newPresence.userId;
+    const user = newPresence.user;
+    const userId = user.id;
+
+    const activities = newPresence.activities.map(a => ({
+        name: a.name,
+        type: a.type,
+        details: a.details,
+        state: a.state,
+        applicationId: a.applicationId,
+        assets: a.assets
+            ? {
+                  largeImage: a.assets.largeImage,
+                  smallImage: a.assets.smallImage,
+                  largeText: a.assets.largeText,
+                  smallText: a.assets.smallText
+              }
+            : null
+    }));
+
     presenceCache.set(userId, {
         status: newPresence.status,
-        activities: newPresence.activities.map(a => a.name),
+        username: user.username,
+        discriminator: user.discriminator,
+        avatarHash: user.avatar,
+        activities: activities,
         updatedAt: Date.now()
     });
 });
 
-// Login with your bot token
-client.login("MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI"); // Replace this with your Discord bot token
+// Login Discord bot
+client.login("MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI"); // Replace with your bot token
 
-// REST endpoint for single user
+// REST endpoint: single user
 app.get("/users/:id", (req, res) => {
     const userId = req.params.id;
     const data = presenceCache.get(userId);
@@ -38,7 +59,7 @@ app.get("/users/:id", (req, res) => {
     res.json(data);
 });
 
-// Optional: multi-user endpoint
+// REST endpoint: multiple users
 app.get("/users", (req, res) => {
     const ids = (req.query.ids || "").split(",");
     if (!ids.length) return res.status(400).json({ error: "No user IDs provided" });
@@ -52,7 +73,7 @@ app.get("/users", (req, res) => {
     res.json(result);
 });
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`API running at http://localhost:${PORT}`);
+// Start server on all network interfaces
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`API running at http://0.0.0.0:${PORT}`);
 });
