@@ -82,7 +82,7 @@ async function fetchTotalUsers() {
     const data = await res.json();
 
     document.getElementById("total-users").textContent =
-      `Total Cached Users: ${data.total}`;
+      `Total Cached Users: ${data.usersCached}`;
   } catch (e) {
     document.getElementById("total-users").textContent =
       "Total Cached Users: unavailable";
