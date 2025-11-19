@@ -1,4 +1,4 @@
-const API_URL = "http://YOUR_LINUX_IP:3000"; // replace with your Linux Mint IP
+const API_URL = "http://192.168.1.194:3000"; // replace with your Linux Mint IP
 const userIds = ["1270223423594954777", "1437696382155886713"]; // Discord user IDs to track
 
 const container = document.getElementById("users-container");
