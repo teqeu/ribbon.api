@@ -1,4 +1,4 @@
-const API_URL = "http://192.168.1.194:3000"; // Your server IP
+const API_URL = "https://mic-display-discover-bug.trycloudflare.com/"; // Your server IP
 const userIds = ["1270223423594954777", "1437696382155886713"]; // Users to track
 
 const container = document.getElementById("users-container");

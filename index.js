@@ -206,7 +206,7 @@ client.on("interactionCreate", async interaction => {
       .addFields(
         { name: "Status", value: data?.status || "offline", inline: true },
         { name: "Custom Status", value: data?.customStatus?.text || "None", inline: true },
-        { name: "API", value: `[Link](${process.env.API_URL || "http://192.168.1.194:3000"}/users/${user.id})` }
+        { name: "API", value: `[Link](${process.env.API_URL || "https://mic-display-discover-bug.trycloudflare.com/"}/users/${user.id})` }
       )
       .setColor(data?.status === "online" ? 0x00ff00 : 0xff0000);
 
