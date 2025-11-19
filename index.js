@@ -1,49 +1,104 @@
 import express from "express";
-import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import http from "http";
 import WebSocket from "ws";
+import { EventEmitter } from "events";
 import dotenv from "dotenv";
+import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder } from "discord.js";
 
 dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_IDS = process.env.ADMIN_IDS?.split(",") || [];
+const API_URL = process.env.API_URL || "https://mic-display-discover-bug.trycloudflare.com";
+class PresenceEvents extends EventEmitter {}
+const presenceEvents = new PresenceEvents();
+
+class PresenceCache {
+  constructor(ttl = 60000) {
+    this.store = new Map();
+    this.ttl = ttl;
+  }
+
+  set(id, data) {
+    const version = (this.store.get(id)?.version || 0) + 1;
+    const payload = { ...data, version, timestamp: Date.now() };
+    this.store.set(id, payload);
+    setTimeout(() => this.store.delete(id), this.ttl);
+    return payload;
+  }
+
+  get(id) {
+    return this.store.get(id) || null;
+  }
+
+  clear() {
+    this.store.clear();
+  }
+
+  all(ids = []) {
+    if (!ids.length) return Array.from(this.store.values());
+    return ids.map(id => this.get(id) || null);
+  }
+
+  size() {
+    return this.store.size;
+  }
+}
+
+const presenceCache = new PresenceCache(5 * 60 * 1000); 
 
 const app = express();
 app.use(express.json());
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildPresences,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Message, Partials.Channel]
-});
-
-// --- Presence cache ---
-const presenceCache = new Map();
-
-// --- WebSocket server ---
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-function broadcastUpdate(userId, data) {
-  const payload = JSON.stringify({ userId, data });
-  wss.clients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(payload);
-  });
+class WebSocketManager {
+  constructor(server) {
+    this.wss = new WebSocket.Server({ server });
+    this.subscriptions = new Map(); // Map<userId, Set<ws>>
+
+    this.wss.on("connection", ws => {
+      ws.on("message", msg => {
+        try {
+          const { action, userId } = JSON.parse(msg);
+          if (action === "subscribe" && userId) {
+            this.subscribe(ws, userId);
+          }
+          if (action === "unsubscribe" && userId) {
+            this.unsubscribe(ws, userId);
+          }
+        } catch {}
+      });
+
+      ws.on("close", () => {
+        for (const subs of this.subscriptions.values()) subs.delete(ws);
+      });
+    });
+  }
+
+  subscribe(ws, userId) {
+    if (!this.subscriptions.has(userId)) this.subscriptions.set(userId, new Set());
+    this.subscriptions.get(userId).add(ws);
+    const data = presenceCache.get(userId);
+    if (data) ws.send(JSON.stringify({ userId, data }));
+  }
+
+  unsubscribe(ws, userId) {
+    this.subscriptions.get(userId)?.delete(ws);
+  }
+
+  broadcast(userId, data) {
+    const subs = this.subscriptions.get(userId) || new Set();
+    subs.forEach(ws => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ userId, data })));
+  }
 }
 
-// --- Handle presence updates ---
-client.on("presenceUpdate", (oldP, newP) => {
-  const user = newP.user;
-  const userId = user.id;
+const wsManager = new WebSocketManager(server);
 
-  const activities = newP.activities.map(a => ({
+function parsePresence(member) {
+  const p = member.presence;
+  const activities = p?.activities.map(a => ({
     name: a.name,
     type: a.type,
     details: a.details,
@@ -56,157 +111,111 @@ client.on("presenceUpdate", (oldP, newP) => {
       largeText: a.assets.largeText,
       smallText: a.assets.smallText
     } : null
-  }));
+  })) || [];
 
-  const customStatus = newP.activities.find(a => a.type === 4);
+  const customStatus = p?.activities.find(a => a.type === 4);
 
-  const statusData = {
-    status: newP.status || "offline",
-    username: user.username,
-    discriminator: user.discriminator,
-    avatarHash: user.avatar,
+  return {
+    status: p?.status || "offline",
+    username: member.user.username,
+    discriminator: member.user.discriminator,
+    avatarHash: member.user.avatar,
     customStatus: customStatus ? { text: customStatus.state, emoji: customStatus.emoji } : null,
     activities,
     updatedAt: Date.now()
   };
+}
 
-  presenceCache.set(userId, statusData);
-  broadcastUpdate(userId, statusData);
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Message, Partials.Channel]
 });
 
-// --- Legacy message commands ---
+client.on("presenceUpdate", (oldP, newP) => {
+  const userId = newP.user.id;
+  const data = parsePresence(newP);
+  const cached = presenceCache.set(userId, data);
+  presenceEvents.emit("presenceUpdated", userId, cached);
+});
+
+presenceEvents.on("presenceUpdated", (userId, data) => {
+  wsManager.broadcast(userId, data);
+});
+
 client.on("messageCreate", async msg => {
   if (msg.author.bot || !msg.guild) return;
-
-  const prefix = "!";
-  if (!msg.content.startsWith(prefix)) return;
-
-  const args = msg.content.slice(prefix.length).trim().split(/\s+/);
-  const command = args.shift().toLowerCase();
-
-  // --- Basic commands ---
-  if (command === "ping") msg.reply("Pong!");
-
-  if (command === "status") {
-    const id = args[0] || msg.author.id;
-    const data = presenceCache.get(id);
-    return msg.reply(data ? `${data.username}#${data.discriminator} is ${data.status}` : "User not cached.");
-  }
-
-  // --- Admin-only ---
-  if (!ADMIN_IDS.includes(msg.author.id)) return;
-
-  if (command === "clearcache") {
-    presenceCache.clear();
-    return msg.reply("Cache cleared.");
-  }
-
-  if (command === "cacheall") {
-    msg.reply("Caching all guild members...");
-    let count = 0;
-    for (const guild of client.guilds.cache.values()) {
-      try {
-        const members = await guild.members.fetch({ withPresences: true });
-        members.forEach(member => {
-          const p = member.presence;
-          const activities = p?.activities.map(a => ({
-            name: a.name,
-            type: a.type,
-            details: a.details,
-            state: a.state,
-            applicationId: a.applicationId,
-            timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
-            assets: a.assets ? {
-              largeImage: a.assets.largeImage,
-              smallImage: a.assets.smallImage,
-              largeText: a.assets.largeText,
-              smallText: a.assets.smallText
-            } : null
-          })) || [];
-
-          const customStatus = p?.activities.find(a => a.type === 4);
-
-          const statusData = {
-            status: p?.status || "offline",
-            username: member.user.username,
-            discriminator: member.user.discriminator,
-            avatarHash: member.user.avatar,
-            customStatus: customStatus ? { text: customStatus.state, emoji: customStatus.emoji } : null,
-            activities,
-            updatedAt: Date.now()
-          };
-
-          presenceCache.set(member.user.id, statusData);
-          broadcastUpdate(member.user.id, statusData);
-          count++;
-        });
-      } catch (err) {
-        console.log(`Guild fetch failed: ${err.message}`);
+  const [command, ...args] = msg.content.slice(1).trim().split(/\s+/);
+  if (msg.content.startsWith("!")) {
+    switch (command.toLowerCase()) {
+      case "ping": return msg.reply("Pong!");
+      case "status": {
+        const id = args[0] || msg.author.id;
+        const data = presenceCache.get(id);
+        return msg.reply(data ? `${data.username}#${data.discriminator} is ${data.status}` : "User not cached.");
       }
+      case "clearcache":
+        if (!ADMIN_IDS.includes(msg.author.id)) return;
+        presenceCache.clear();
+        return msg.reply("Cache cleared.");
+      case "cacheall":
+        if (!ADMIN_IDS.includes(msg.author.id)) return;
+        msg.reply("Caching all guild members...");
+        for (const guild of client.guilds.cache.values()) {
+          const members = await guild.members.fetch({ withPresences: true });
+          for (const member of members.values()) {
+            const data = parsePresence(member);
+            presenceCache.set(member.user.id, data);
+            wsManager.broadcast(member.user.id, data);
+          }
+        }
+        msg.reply(`Cached ${presenceCache.size()} users.`);
+        break;
     }
-    msg.reply(`Cached ${count} users.`);
   }
 });
 
-// --- REST API ---
 app.get("/users/:id", (req, res) => {
   const data = presenceCache.get(req.params.id);
-  if (!data) return res.status(404).json({ error: "User not found" });
-  res.json(data);
+  return data ? res.json(data) : res.status(404).json({ error: "User not found" });
 });
 
 app.get("/users", (req, res) => {
   const ids = (req.query.ids || "").split(",");
-  const result = {};
-  ids.forEach(id => result[id] = presenceCache.get(id) || null);
-  res.json(result);
+  return res.json(presenceCache.all(ids));
 });
 
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", usersCached: presenceCache.size });
-});
+app.get("/users/count", (req, res) => res.json({ total: presenceCache.size() }));
+app.get("/health", (req, res) => res.json({ status: "ok", usersCached: presenceCache.size() }));
 
-app.get("/users/count", (req, res) => {
-  res.json({ total: presenceCache.size });
-});
-
-// --- Slash Command Registration ---
 const rest = new REST({ version: "10" }).setToken(BOT_TOKEN);
 
-async function registerGlobalCommands() {
+async function registerCommands() {
   const whoisCommand = new SlashCommandBuilder()
     .setName("whois")
     .setDescription("Get user presence info")
-    .addUserOption(option =>
-      option.setName("user").setDescription("User to look up").setRequired(true)
-    );
+    .addUserOption(opt => opt.setName("user").setDescription("User to look up").setRequired(true));
 
-  try {
-    console.log("Registering global slash commands...");
-    await rest.put(Routes.applicationCommands(client.user.id), {
-      body: [whoisCommand.toJSON()]
-    });
-    console.log("Global slash commands registered.");
-  } catch (err) {
-    console.error("Failed to register slash commands:", err);
-  }
+  await rest.put(Routes.applicationCommands(client.user.id), { body: [whoisCommand.toJSON()] });
 }
 
-// --- Slash command handling ---
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
-
   if (interaction.commandName === "whois") {
     const user = interaction.options.getUser("user");
     const data = presenceCache.get(user.id);
-
     const embed = new EmbedBuilder()
       .setTitle(`${user.username}#${user.discriminator}`)
       .setThumbnail(user.displayAvatarURL())
       .addFields(
         { name: "Status", value: data?.status || "offline", inline: true },
         { name: "Custom Status", value: data?.customStatus?.text || "None", inline: true },
-        { name: "API", value: `[Link](${process.env.API_URL || "https://mic-display-discover-bug.trycloudflare.com"}/users/${user.id})` }
+        { name: "API", value: `[Link](${API_URL}/users/${user.id})` }
       )
       .setColor(data?.status === "online" ? 0x00ff00 : 0xff0000);
 
@@ -214,15 +223,10 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-// --- Login bot and register slash commands ---
 client.once("ready", async () => {
   console.log(`${client.user.tag} is online.`);
-  await registerGlobalCommands();
+  await registerCommands();
 });
 
 client.login(BOT_TOKEN);
-
-// --- Start server with WebSocket ---
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`API + WebSocket running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`API + WebSocket running on port ${PORT}`));
