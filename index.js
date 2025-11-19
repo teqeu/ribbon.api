@@ -70,15 +70,16 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
   }));
 
   const customStatus = newPresence.activities.find(a => a.type === 4);
+
   const statusData = {
-    status: newPresence.status,
+    status: newPresence.status || "offline",
     username: user.username,
     discriminator: user.discriminator,
     avatarHash: user.avatar,
     customStatus: customStatus
       ? { text: customStatus.state, emoji: customStatus.emoji }
       : null,
-    activities,
+    activities: activities.length ? activities : [], // empty array if no activities
     updatedAt: Date.now()
   };
 
@@ -109,63 +110,63 @@ client.on("messageCreate", async msg => {
   // --- Admin-only commands ---
   if (!ADMIN_IDS.includes(msg.author.id)) return;
 
-  if (command === "cacheall") {
-    msg.reply("Caching all members' presence in all guilds...");
-    let total = 0;
+if (command === "cacheall") {
+  msg.reply("Caching all members' presence in all guilds...");
+  let total = 0;
 
-    for (const guild of client.guilds.cache.values()) {
-      try {
-        const members = await guild.members.fetch({ withPresences: true });
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const members = await guild.members.fetch({ withPresences: true });
 
-        members.forEach(member => {
-          if (member.presence) {
-            const user = member.user;
-            const activities = member.presence.activities.map(a => ({
-              name: a.name,
-              type: a.type,
-              details: a.details,
-              state: a.state,
-              applicationId: a.applicationId,
-              timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
-              assets: a.assets
-                ? {
-                    largeImage: a.assets.largeImage,
-                    smallImage: a.assets.smallImage,
-                    largeText: a.assets.largeText,
-                    smallText: a.assets.smallText
-                  }
-                : null
-            }));
+      members.forEach(member => {
+        const user = member.user;
+        const presence = member.presence;
 
-            const customStatus = member.presence.activities.find(a => a.type === 4);
-            const statusData = {
-              status: member.presence.status,
-              username: user.username,
-              discriminator: user.discriminator,
-              avatarHash: user.avatar,
-              customStatus: customStatus
-                ? { text: customStatus.state, emoji: customStatus.emoji }
-                : null,
-              activities,
-              updatedAt: Date.now()
-            };
+        const activities = presence?.activities.map(a => ({
+          name: a.name,
+          type: a.type,
+          details: a.details,
+          state: a.state,
+          applicationId: a.applicationId,
+          timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
+          assets: a.assets
+            ? {
+                largeImage: a.assets.largeImage,
+                smallImage: a.assets.smallImage,
+                largeText: a.assets.largeText,
+                smallText: a.assets.smallText
+              }
+            : null
+        })) || []; // empty array if no activities
 
-            presenceCache.set(user.id, statusData);
-            broadcastUpdate(user.id, statusData);
-            total++;
-          }
-        });
+        const customStatus = presence?.activities.find(a => a.type === 4) || null;
 
-        // Delay 2 seconds per guild to prevent rate limits
-        await new Promise(res => setTimeout(res, 2000));
+        const statusData = {
+          status: presence?.status || "offline",
+          username: user.username,
+          discriminator: user.discriminator,
+          avatarHash: user.avatar,
+          customStatus: customStatus
+            ? { text: customStatus.state, emoji: customStatus.emoji }
+            : null,
+          activities,
+          updatedAt: Date.now()
+        };
 
-      } catch (err) {
-        console.error(`Failed to fetch guild ${guild.id}:`, err.message);
-      }
+        presenceCache.set(user.id, statusData);
+        broadcastUpdate(user.id, statusData);
+        total++;
+      });
+
+      await new Promise(res => setTimeout(res, 2000)); // throttle per guild
+
+    } catch (err) {
+      console.error(`Failed to fetch guild ${guild.id}:`, err.message);
     }
-
-    msg.reply(`Presence cache updated for ${total} users.`);
   }
+
+  msg.reply(`Presence cache updated for ${total} users.`);
+}
 
   if (command === "clearcache") {
     presenceCache.clear();
