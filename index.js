@@ -2,21 +2,21 @@ import express from "express";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import http from "http";
 import WebSocket from "ws";
-
 import path from "path";
 import { fileURLToPath } from "url";
 
-// --- Create Express app first ---
-const app = express();
+// --- Config ---
 const PORT = 3000;
+const BOT_TOKEN = "MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI"; // replace with your bot token
+const ADMIN_IDS = ["1270223423594954777"]; // Discord IDs allowed to run cache commands
 
-// --- Serve frontend ---
+// --- Express app ---
+const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Serve frontend
 app.use(express.static(path.join(__dirname, "public")));
-
-// Optional: serve index.html for root
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
@@ -36,7 +36,7 @@ const client = new Client({
 // --- Presence Cache ---
 const presenceCache = new Map();
 
-// --- WebSocket Server for live updates ---
+// --- WebSocket Server ---
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -96,6 +96,7 @@ client.on("messageCreate", async msg => {
   const args = msg.content.slice(prefix.length).trim().split(/\s+/);
   const command = args.shift().toLowerCase();
 
+  // --- Basic commands ---
   if (command === "ping") msg.reply("Pong!");
 
   if (command === "status") {
@@ -104,10 +105,67 @@ client.on("messageCreate", async msg => {
     if (!data) return msg.reply("User not found in cache.");
     msg.reply(`User ${data.username}#${data.discriminator} is ${data.status}`);
   }
+
+  // --- Admin-only commands ---
+  if (!ADMIN_IDS.includes(msg.author.id)) return;
+
+  if (command === "cacheall") {
+    msg.reply("Caching all members' presence in all guilds...");
+    let total = 0;
+
+    for (const guild of client.guilds.cache.values()) {
+      const members = await guild.members.fetch();
+      members.forEach(member => {
+        if (member.presence) {
+          const user = member.user;
+          const activities = member.presence.activities.map(a => ({
+            name: a.name,
+            type: a.type,
+            details: a.details,
+            state: a.state,
+            applicationId: a.applicationId,
+            timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
+            assets: a.assets
+              ? {
+                  largeImage: a.assets.largeImage,
+                  smallImage: a.assets.smallImage,
+                  largeText: a.assets.largeText,
+                  smallText: a.assets.smallText
+                }
+              : null
+          }));
+
+          const customStatus = member.presence.activities.find(a => a.type === 4);
+          const statusData = {
+            status: member.presence.status,
+            username: user.username,
+            discriminator: user.discriminator,
+            avatarHash: user.avatar,
+            customStatus: customStatus
+              ? { text: customStatus.state, emoji: customStatus.emoji }
+              : null,
+            activities,
+            updatedAt: Date.now()
+          };
+
+          presenceCache.set(user.id, statusData);
+          broadcastUpdate(user.id, statusData);
+          total++;
+        }
+      });
+    }
+
+    msg.reply(`Presence cache updated for ${total} users.`);
+  }
+
+  if (command === "clearcache") {
+    presenceCache.clear();
+    msg.reply("Presence cache cleared.");
+  }
 });
 
 // --- Login Discord Bot ---
-client.login("MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI");
+client.login(BOT_TOKEN);
 
 // --- REST Endpoints ---
 // Single user
@@ -136,7 +194,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", usersCached: presenceCache.size });
 });
 
-// Start server with WebSocket
+// --- Start server with WebSocket ---
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`API + WebSocket running at http://0.0.0.0:${PORT}`);
 });
