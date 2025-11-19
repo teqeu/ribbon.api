@@ -7,8 +7,8 @@ import { fileURLToPath } from "url";
 
 // --- Config ---
 const PORT = 3000;
-const BOT_TOKEN = "MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI"; // replace with your bot token
-const ADMIN_IDS = ["1270223423594954777"]; // Discord IDs allowed to run cache commands
+const BOT_TOKEN = "MTQzNDMxMDMxNzAwMDg4NDQxNw.GFSrCc.H5TGjcvV1llVBR26EhHAzW0-YDIeK2Obhp2bTI"; // Replace with your bot token
+const ADMIN_IDS = ["1270223423594954777"]; // Discord IDs allowed to run admin commands
 
 // --- Express app ---
 const app = express();
@@ -114,45 +114,54 @@ client.on("messageCreate", async msg => {
     let total = 0;
 
     for (const guild of client.guilds.cache.values()) {
-      const members = await guild.members.fetch();
-      members.forEach(member => {
-        if (member.presence) {
-          const user = member.user;
-          const activities = member.presence.activities.map(a => ({
-            name: a.name,
-            type: a.type,
-            details: a.details,
-            state: a.state,
-            applicationId: a.applicationId,
-            timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
-            assets: a.assets
-              ? {
-                  largeImage: a.assets.largeImage,
-                  smallImage: a.assets.smallImage,
-                  largeText: a.assets.largeText,
-                  smallText: a.assets.smallText
-                }
-              : null
-          }));
+      try {
+        const members = await guild.members.fetch({ withPresences: true });
 
-          const customStatus = member.presence.activities.find(a => a.type === 4);
-          const statusData = {
-            status: member.presence.status,
-            username: user.username,
-            discriminator: user.discriminator,
-            avatarHash: user.avatar,
-            customStatus: customStatus
-              ? { text: customStatus.state, emoji: customStatus.emoji }
-              : null,
-            activities,
-            updatedAt: Date.now()
-          };
+        members.forEach(member => {
+          if (member.presence) {
+            const user = member.user;
+            const activities = member.presence.activities.map(a => ({
+              name: a.name,
+              type: a.type,
+              details: a.details,
+              state: a.state,
+              applicationId: a.applicationId,
+              timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
+              assets: a.assets
+                ? {
+                    largeImage: a.assets.largeImage,
+                    smallImage: a.assets.smallImage,
+                    largeText: a.assets.largeText,
+                    smallText: a.assets.smallText
+                  }
+                : null
+            }));
 
-          presenceCache.set(user.id, statusData);
-          broadcastUpdate(user.id, statusData);
-          total++;
-        }
-      });
+            const customStatus = member.presence.activities.find(a => a.type === 4);
+            const statusData = {
+              status: member.presence.status,
+              username: user.username,
+              discriminator: user.discriminator,
+              avatarHash: user.avatar,
+              customStatus: customStatus
+                ? { text: customStatus.state, emoji: customStatus.emoji }
+                : null,
+              activities,
+              updatedAt: Date.now()
+            };
+
+            presenceCache.set(user.id, statusData);
+            broadcastUpdate(user.id, statusData);
+            total++;
+          }
+        });
+
+        // Delay 2 seconds per guild to prevent rate limits
+        await new Promise(res => setTimeout(res, 2000));
+
+      } catch (err) {
+        console.error(`Failed to fetch guild ${guild.id}:`, err.message);
+      }
     }
 
     msg.reply(`Presence cache updated for ${total} users.`);
