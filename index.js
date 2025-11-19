@@ -11,11 +11,12 @@ const PORT = process.env.PORT || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_IDS = process.env.ADMIN_IDS?.split(",") || [];
 const API_URL = process.env.API_URL || "https://mic-display-discover-bug.trycloudflare.com";
+
 class PresenceEvents extends EventEmitter {}
 const presenceEvents = new PresenceEvents();
 
 class PresenceCache {
-  constructor(ttl = 60000) {
+  constructor(ttl = 300_000) {
     this.store = new Map();
     this.ttl = ttl;
   }
@@ -28,53 +29,40 @@ class PresenceCache {
     return payload;
   }
 
-  get(id) {
-    return this.store.get(id) || null;
-  }
-
-  clear() {
-    this.store.clear();
-  }
-
-  all(ids = []) {
-    if (!ids.length) return Array.from(this.store.values());
-    return ids.map(id => this.get(id) || null);
-  }
-
-  size() {
-    return this.store.size;
-  }
+  get(id) { return this.store.get(id) || null; }
+  clear() { this.store.clear(); }
+  all(ids = []) { return ids.length ? ids.map(id => this.get(id) || null) : Array.from(this.store.values()); }
+  size() { return this.store.size; }
 }
 
-const presenceCache = new PresenceCache(5 * 60 * 1000); 
+const presenceCache = new PresenceCache();
 
 const app = express();
 app.use(express.json());
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
 
 class WebSocketManager {
   constructor(server) {
     this.wss = new WebSocket.Server({ server });
-    this.subscriptions = new Map(); // Map<userId, Set<ws>>
+    this.subscriptions = new Map();
 
     this.wss.on("connection", ws => {
       ws.on("message", msg => {
         try {
-          const { action, userId } = JSON.parse(msg);
-          if (action === "subscribe" && userId) {
-            this.subscribe(ws, userId);
-          }
-          if (action === "unsubscribe" && userId) {
-            this.unsubscribe(ws, userId);
-          }
-        } catch {}
+          const { action, userId, guildId } = JSON.parse(msg);
+          if (action === "subscribeUser" && userId) this.subscribe(ws, userId);
+          if (action === "unsubscribeUser" && userId) this.unsubscribe(ws, userId);
+          if (action === "subscribeGuild" && guildId) this.subscribeGuild(ws, guildId);
+          if (action === "unsubscribeGuild" && guildId) this.unsubscribeGuild(ws, guildId);
+        } catch (e) { console.error("Invalid WS message", e); }
       });
 
       ws.on("close", () => {
         for (const subs of this.subscriptions.values()) subs.delete(ws);
       });
     });
+
+    presenceEvents.on("presenceUpdated", (userId, data) => this.broadcast(userId, data));
   }
 
   subscribe(ws, userId) {
@@ -84,13 +72,23 @@ class WebSocketManager {
     if (data) ws.send(JSON.stringify({ userId, data }));
   }
 
-  unsubscribe(ws, userId) {
-    this.subscriptions.get(userId)?.delete(ws);
+  unsubscribe(ws, userId) { this.subscriptions.get(userId)?.delete(ws); }
+
+  subscribeGuild(ws, guildId) {
+    if (!this.subscriptions.has(guildId)) this.subscriptions.set(guildId, new Set());
+    this.subscriptions.get(guildId).add(ws);
   }
+
+  unsubscribeGuild(ws, guildId) { this.subscriptions.get(guildId)?.delete(ws); }
 
   broadcast(userId, data) {
     const subs = this.subscriptions.get(userId) || new Set();
     subs.forEach(ws => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ userId, data })));
+  }
+
+  broadcastGuild(guildId, data) {
+    const subs = this.subscriptions.get(guildId) || new Set();
+    subs.forEach(ws => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ guildId, data })));
   }
 }
 
@@ -144,14 +142,13 @@ client.on("presenceUpdate", (oldP, newP) => {
   presenceEvents.emit("presenceUpdated", userId, cached);
 });
 
-presenceEvents.on("presenceUpdated", (userId, data) => {
-  wsManager.broadcast(userId, data);
-});
-
 client.on("messageCreate", async msg => {
   if (msg.author.bot || !msg.guild) return;
   const [command, ...args] = msg.content.slice(1).trim().split(/\s+/);
-  if (msg.content.startsWith("!")) {
+
+  if (!msg.content.startsWith("!")) return;
+
+  try {
     switch (command.toLowerCase()) {
       case "ping": return msg.reply("Pong!");
       case "status": {
@@ -172,12 +169,13 @@ client.on("messageCreate", async msg => {
             const data = parsePresence(member);
             presenceCache.set(member.user.id, data);
             wsManager.broadcast(member.user.id, data);
+            wsManager.broadcastGuild(guild.id, data);
           }
         }
         msg.reply(`Cached ${presenceCache.size()} users.`);
         break;
     }
-  }
+  } catch (e) { console.error("Message command failed", e); }
 });
 
 app.get("/users/:id", (req, res) => {
@@ -206,6 +204,7 @@ async function registerCommands() {
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
+
   if (interaction.commandName === "whois") {
     const user = interaction.options.getUser("user");
     const data = presenceCache.get(user.id);
