@@ -6,7 +6,20 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
   <h1>Discord Presence Dashboard</h1>
+
+  <div id="stats">
+    <div class="stat-item">
+      <span class="label">Cached Users:</span>
+      <span id="cachedUsers">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="label">System Status:</span>
+      <span id="systemStatus">Loading...</span>
+    </div>
+  </div>
+
   <div id="users-container"></div>
 
   <script src="script.js"></script>

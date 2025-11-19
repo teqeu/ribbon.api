@@ -1,9 +1,9 @@
-const API_URL = "http://192.168.1.194:3000"; // replace with your Linux Mint IP
-const userIds = ["1270223423594954777", "1437696382155886713"]; // Discord user IDs to track
+const API_URL = "http://192.168.1.194:3000"; // Your server IP
+const userIds = ["1270223423594954777", "1437696382155886713"]; // Users to track
 
 const container = document.getElementById("users-container");
 
-// Render a user card
+// Render a user card safely
 function renderUser(userId, data) {
   let card = document.getElementById(userId);
   if (!card) {
@@ -13,45 +13,79 @@ function renderUser(userId, data) {
     container.appendChild(card);
   }
 
-  const avatarUrl = `https://cdn.discordapp.com/avatars/${userId}/${data.avatarHash}.png`;
-  const statusClass = `status-${data.status || "offline"}`;
-  const customStatus = data.customStatus ? `${data.customStatus.emoji || ""} ${data.customStatus.text || ""}` : "";
+  const avatarUrl = data.avatarHash
+    ? `https://cdn.discordapp.com/avatars/${userId}/${data.avatarHash}.png`
+    : `https://cdn.discordapp.com/embed/avatars/0.png`;
+
+  const status = data.status || "offline";
+  const statusClass = `status-${status}`;
+
+  const customStatus = data.customStatus
+    ? `${data.customStatus.emoji || ""} ${data.customStatus.text || ""}`
+    : "";
 
   let activitiesHtml = "";
-  data.activities.forEach(a => {
-    let assetImg = a.assets?.largeImage
-      ? `<img src="https://cdn.discordapp.com/app-assets/${a.applicationId}/${a.assets.largeImage}.png" alt="" width="50" />`
-      : "";
-    activitiesHtml += `<div class="activity">${assetImg} <strong>${a.name}</strong> - ${a.details || ""} ${a.state || ""}</div>`;
-  });
+
+  if (Array.isArray(data.activities) && data.activities.length > 0) {
+    data.activities.forEach(a => {
+      let assetImg = "";
+
+      if (a.assets?.largeImage && a.applicationId) {
+        assetImg = `
+          <img 
+            src="https://cdn.discordapp.com/app-assets/${a.applicationId}/${a.assets.largeImage}.png"
+            alt=""
+            width="50"
+          />
+        `;
+      }
+
+      activitiesHtml += `
+        <div class="activity">
+          ${assetImg}
+          <strong>${a.name}</strong> 
+          ${a.details || ""} 
+          ${a.state || ""}
+        </div>
+      `;
+    });
+  } else {
+    activitiesHtml = `<div class="activity none">No activities</div>`;
+  }
 
   card.innerHTML = `
     <img src="${avatarUrl}" alt="${data.username}" />
     <h3>${data.username}#${data.discriminator}</h3>
-    <p class="${statusClass}">${data.status.toUpperCase()}</p>
+    <p class="${statusClass}">${status.toUpperCase()}</p>
     <p>${customStatus}</p>
     ${activitiesHtml}
   `;
 }
 
-// Initial fetch
+// Fetch users once
 async function fetchUsers() {
-  const res = await fetch(`${API_URL}/users?ids=${userIds.join(",")}`);
-  const data = await res.json();
-  for (const id of userIds) {
-    if (data[id]) renderUser(id, data[id]);
+  try {
+    const res = await fetch(`${API_URL}/users?ids=${userIds.join(",")}`);
+    const data = await res.json();
+
+    userIds.forEach(id => {
+      if (data[id]) renderUser(id, data[id]);
+    });
+  } catch (e) {
+    console.log("Failed to load users");
   }
 }
 
-// WebSocket for live updates
-const ws = new WebSocket(`ws://${API_URL.replace("http://","")}`);
+// WebSocket auto-connect
+const ws = new WebSocket(`ws://${API_URL.split("://")[1]}`);
+
 ws.onmessage = (event) => {
   const { userId, data } = JSON.parse(event.data);
   if (userIds.includes(userId)) renderUser(userId, data);
 };
 
-// Refresh every 10 seconds as fallback
+// Backup refresh every 10s
 setInterval(fetchUsers, 10000);
 
-// Initial load
+// First load
 fetchUsers();
