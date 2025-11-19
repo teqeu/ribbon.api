@@ -1,9 +1,9 @@
 import express from "express";
 import http from "http";
-import WebSocket from "ws";
-import { EventEmitter } from "events";
 import dotenv from "dotenv";
+import { EventEmitter } from "events";
 import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { WebSocketManager } from "./ws/managers.js";
 
 dotenv.config();
 
@@ -37,62 +37,23 @@ class PresenceCache {
 
 const presenceCache = new PresenceCache();
 
+/* ===== Express & HTTP Server ===== */
 const app = express();
 app.use(express.json());
 const server = http.createServer(app);
 
-class WebSocketManager {
-  constructor(server) {
-    this.wss = new WebSocket.Server({ server });
-    this.subscriptions = new Map();
+const wsManager = new WebSocketManager(server, presenceEvents, presenceCache);
 
-    this.wss.on("connection", ws => {
-      ws.on("message", msg => {
-        try {
-          const { action, userId, guildId } = JSON.parse(msg);
-          if (action === "subscribeUser" && userId) this.subscribe(ws, userId);
-          if (action === "unsubscribeUser" && userId) this.unsubscribe(ws, userId);
-          if (action === "subscribeGuild" && guildId) this.subscribeGuild(ws, guildId);
-          if (action === "unsubscribeGuild" && guildId) this.unsubscribeGuild(ws, guildId);
-        } catch (e) { console.error("Invalid WS message", e); }
-      });
-
-      ws.on("close", () => {
-        for (const subs of this.subscriptions.values()) subs.delete(ws);
-      });
-    });
-
-    presenceEvents.on("presenceUpdated", (userId, data) => this.broadcast(userId, data));
-  }
-
-  subscribe(ws, userId) {
-    if (!this.subscriptions.has(userId)) this.subscriptions.set(userId, new Set());
-    this.subscriptions.get(userId).add(ws);
-    const data = presenceCache.get(userId);
-    if (data) ws.send(JSON.stringify({ userId, data }));
-  }
-
-  unsubscribe(ws, userId) { this.subscriptions.get(userId)?.delete(ws); }
-
-  subscribeGuild(ws, guildId) {
-    if (!this.subscriptions.has(guildId)) this.subscriptions.set(guildId, new Set());
-    this.subscriptions.get(guildId).add(ws);
-  }
-
-  unsubscribeGuild(ws, guildId) { this.subscriptions.get(guildId)?.delete(ws); }
-
-  broadcast(userId, data) {
-    const subs = this.subscriptions.get(userId) || new Set();
-    subs.forEach(ws => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ userId, data })));
-  }
-
-  broadcastGuild(guildId, data) {
-    const subs = this.subscriptions.get(guildId) || new Set();
-    subs.forEach(ws => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ guildId, data })));
-  }
-}
-
-const wsManager = new WebSocketManager(server);
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Message, Partials.Channel]
+});
 
 function parsePresence(member) {
   const p = member.presence;
@@ -124,17 +85,6 @@ function parsePresence(member) {
   };
 }
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildPresences,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Message, Partials.Channel]
-});
-
 client.on("presenceUpdate", (oldP, newP) => {
   const userId = newP.user.id;
   const data = parsePresence(newP);
@@ -144,13 +94,14 @@ client.on("presenceUpdate", (oldP, newP) => {
 
 client.on("messageCreate", async msg => {
   if (msg.author.bot || !msg.guild) return;
-  const [command, ...args] = msg.content.slice(1).trim().split(/\s+/);
-
   if (!msg.content.startsWith("!")) return;
+
+  const [command, ...args] = msg.content.slice(1).trim().split(/\s+/);
 
   try {
     switch (command.toLowerCase()) {
-      case "ping": return msg.reply("Pong!");
+      case "ping":
+        return msg.reply("Pong!");
       case "status": {
         const id = args[0] || msg.author.id;
         const data = presenceCache.get(id);
@@ -175,7 +126,9 @@ client.on("messageCreate", async msg => {
         msg.reply(`Cached ${presenceCache.size()} users.`);
         break;
     }
-  } catch (e) { console.error("Message command failed", e); }
+  } catch (e) {
+    console.error("Message command failed", e);
+  }
 });
 
 app.get("/users/:id", (req, res) => {
@@ -191,6 +144,7 @@ app.get("/users", (req, res) => {
 app.get("/users/count", (req, res) => res.json({ total: presenceCache.size() }));
 app.get("/health", (req, res) => res.json({ status: "ok", usersCached: presenceCache.size() }));
 
+/* ===== Slash Commands ===== */
 const rest = new REST({ version: "10" }).setToken(BOT_TOKEN);
 
 async function registerCommands() {
