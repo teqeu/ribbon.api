@@ -62,7 +62,7 @@ function renderUser(userId, data) {
   `;
 }
 
-// Fetch users once
+// Fetch selected users
 async function fetchUsers() {
   try {
     const res = await fetch(`${API_URL}/users?ids=${userIds.join(",")}`);
@@ -76,6 +76,7 @@ async function fetchUsers() {
   }
 }
 
+// Fetch total cached users
 async function fetchTotalUsers() {
   try {
     const res = await fetch(`${API_URL}/health`);
@@ -90,15 +91,17 @@ async function fetchTotalUsers() {
 }
 
 // WebSocket auto-connect
-const ws = new WebSocket(`ws://${API_URL.split("://")[1]}`);
+const ws = new WebSocket(`ws://${API_URL.replace("http://", "")}`);
 
 ws.onmessage = (event) => {
   const { userId, data } = JSON.parse(event.data);
   if (userIds.includes(userId)) renderUser(userId, data);
 };
 
-// Backup refresh every 10s
+// Refresh every 10 seconds
 setInterval(fetchUsers, 10000);
+setInterval(fetchTotalUsers, 10000);
 
-// First load
+// Initial load
 fetchUsers();
+fetchTotalUsers();
