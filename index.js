@@ -204,6 +204,13 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", usersCached: presenceCache.size });
 });
 
+// Total users in cache
+app.get("/users/count", (req, res) => {
+  res.json({
+    total: presenceCache.size
+  });
+});
+
 // --- Start server with WebSocket ---
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`API + WebSocket running at http://0.0.0.0:${PORT}`);
