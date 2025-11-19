@@ -1,0 +1,22 @@
+# Environment files
+.env
+.env.local
+.env.*
+!.env.example
+
+public/index.html
+public/style.css
+public/script.js
+
+.DS_Store
+
+# Node modules
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
