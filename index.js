@@ -6,6 +6,10 @@ import WebSocket from "ws";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// --- Create Express app first ---
+const app = express();
+const PORT = 3000;
+
 // --- Serve frontend ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,9 +20,6 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public/index.html"));
 });
-
-const app = express();
-const PORT = 3000;
 
 // --- Discord Client ---
 const client = new Client({
@@ -51,7 +52,6 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
   const user = newPresence.user;
   const userId = user.id;
 
-  // Map activities
   const activities = newPresence.activities.map(a => ({
     name: a.name,
     type: a.type,
@@ -69,7 +69,6 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
       : null
   }));
 
-  // Custom status
   const customStatus = newPresence.activities.find(a => a.type === 4);
   const statusData = {
     status: newPresence.status,
@@ -84,8 +83,6 @@ client.on("presenceUpdate", (oldPresence, newPresence) => {
   };
 
   presenceCache.set(userId, statusData);
-
-  // Broadcast live update
   broadcastUpdate(userId, statusData);
 });
 
@@ -99,9 +96,7 @@ client.on("messageCreate", async msg => {
   const args = msg.content.slice(prefix.length).trim().split(/\s+/);
   const command = args.shift().toLowerCase();
 
-  if (command === "ping") {
-    msg.reply("Pong!");
-  }
+  if (command === "ping") msg.reply("Pong!");
 
   if (command === "status") {
     const userId = args[0] || msg.author.id;
