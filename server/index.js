@@ -2,7 +2,15 @@ import express from "express";
 import http from "http";
 import dotenv from "dotenv";
 import { EventEmitter } from "events";
-import { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+  EmbedBuilder
+} from "discord.js";
 import { WebSocketManager } from "./ws/managers.js";
 
 dotenv.config();
@@ -10,7 +18,7 @@ dotenv.config();
 const PORT = process.env.PORT || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_IDS = process.env.ADMIN_IDS?.split(",") || [];
-const API_URL = process.env.API_URL || "https://mic-display-discover-bug.trycloudflare.com";
+const API_URL = process.env.API_URL || "https://agenda-thesaurus-passive-boards.trycloudflare.com/";
 
 class PresenceEvents extends EventEmitter {}
 const presenceEvents = new PresenceEvents();
@@ -37,7 +45,6 @@ class PresenceCache {
 
 const presenceCache = new PresenceCache();
 
-/* ===== Express & HTTP Server ===== */
 const app = express();
 app.use(express.json());
 const server = http.createServer(app);
@@ -56,7 +63,12 @@ const client = new Client({
 });
 
 function parsePresence(member) {
+  const user = member.user;
   const p = member.presence;
+
+  const badges = user.flags?.toArray() || [];
+  const badgeLinks = badges.map(b => BADGE_IMAGES[b]).filter(Boolean);
+
   const activities = p?.activities.map(a => ({
     name: a.name,
     type: a.type,
@@ -64,21 +76,31 @@ function parsePresence(member) {
     state: a.state,
     applicationId: a.applicationId,
     timestamps: a.timestamps ? { start: a.timestamps.start, end: a.timestamps.end } : null,
-    assets: a.assets ? {
-      largeImage: a.assets.largeImage,
-      smallImage: a.assets.smallImage,
-      largeText: a.assets.largeText,
-      smallText: a.assets.smallText
-    } : null
+    assets: a.assets
+      ? {
+          largeImage: a.assets.largeImage
+            ? `https://cdn.discordapp.com/app-assets/${a.applicationId}/${a.assets.largeImage}.png`
+            : null,
+          smallImage: a.assets.smallImage
+            ? `https://cdn.discordapp.com/app-assets/${a.applicationId}/${a.assets.smallImage}.png`
+            : null,
+          largeText: a.assets.largeText,
+          smallText: a.assets.smallText
+        }
+      : null
   })) || [];
 
   const customStatus = p?.activities.find(a => a.type === 4);
+  const status = p?.status || "offline";
 
   return {
-    status: p?.status || "offline",
-    username: member.user.username,
-    discriminator: member.user.discriminator,
-    avatarHash: member.user.avatar,
+    status,
+    statusImage: STATUS_IMAGES[status] || STATUS_IMAGES.offline,
+    username: user.username,
+    discriminator: user.discriminator,
+    avatarHash: user.avatar,
+    badges,
+    badgeLinks,
     customStatus: customStatus ? { text: customStatus.state, emoji: customStatus.emoji } : null,
     activities,
     updatedAt: Date.now()
@@ -142,9 +164,24 @@ app.get("/users", (req, res) => {
 });
 
 app.get("/users/count", (req, res) => res.json({ total: presenceCache.size() }));
+
+app.get("/users/:id/activities", (req, res) => {
+  const data = presenceCache.get(req.params.id);
+  if (!data) return res.status(404).json({ error: "User not found" });
+
+  const images = data.activities
+    .filter(a => a.assets?.largeImage)
+    .map(a => ({
+      name: a.name,
+      largeImage: a.assets.largeImage,
+      smallImage: a.assets.smallImage
+    }));
+
+  res.json(images);
+});
+
 app.get("/health", (req, res) => res.json({ status: "ok", usersCached: presenceCache.size() }));
 
-/* ===== Slash Commands ===== */
 const rest = new REST({ version: "10" }).setToken(BOT_TOKEN);
 
 async function registerCommands() {
@@ -162,15 +199,37 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "whois") {
     const user = interaction.options.getUser("user");
     const data = presenceCache.get(user.id);
+    if (!data) return interaction.reply({ content: "User not cached.", ephemeral: true });
+
     const embed = new EmbedBuilder()
       .setTitle(`${user.username}#${user.discriminator}`)
       .setThumbnail(user.displayAvatarURL())
+      .setColor(data?.status === "online" ? 0x00ff00 : 0xff0000)
       .addFields(
-        { name: "Status", value: data?.status || "offline", inline: true },
-        { name: "Custom Status", value: data?.customStatus?.text || "None", inline: true },
+        { name: "Status", value: data.status, inline: true },
+        { name: "Custom Status", value: data.customStatus?.text || "None", inline: true },
+        { name: "Badges", value: data.badges.length ? data.badges.join(", ") : "None", inline: true },
         { name: "API", value: `[Link](${API_URL}/users/${user.id})` }
-      )
-      .setColor(data?.status === "online" ? 0x00ff00 : 0xff0000);
+      );
+
+    if (data.badgeLinks.length) {
+      embed.addFields({ name: "Badge Images", value: data.badgeLinks.join("\n") });
+    }
+
+    if (data.activities.length) {
+      for (const activity of data.activities) {
+        if (activity.assets?.largeImage) {
+          embed.addFields({
+            name: `🎮 ${activity.name}`,
+            value: activity.details || activity.state || "No details",
+            inline: false
+          });
+          embed.setImage(activity.assets.largeImage);
+        }
+      }
+    }
+
+    embed.setImage(data.statusImage); 
 
     await interaction.reply({ embeds: [embed] });
   }
